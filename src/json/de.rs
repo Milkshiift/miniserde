@@ -58,6 +58,72 @@ impl<'a, 'b> Drop for Deserializer<'a, 'b> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum CharClass {
+    Whitespace, // ' ', '\n', '\r', '\t'
+    Control,    // Invalid characters \x00-\x1F
+    Digit,      // '0' through '9'
+    Quote,      // '"'
+    LeftBrace,  // '{'
+    RightBrace, // '}'
+    LeftBracket,// '['
+    RightBracket,// ']'
+    Comma,      // ','
+    Colon,      // ':'
+    Minus,      // '-'
+    Ident,      // 't', 'f', 'n'
+    Error,      // Any other byte that is invalid in JSON
+}
+
+const CLASSIFY: [CharClass; 256] = {
+    let mut table = [CharClass::Error; 256];
+    let mut i: usize = 0;
+
+    while i < 256 {
+        table[i] = match i as u8 {
+            // Whitespace
+            b' ' | b'\n' | b'\r' | b'\t' => CharClass::Whitespace,
+
+            // Control characters
+            0x00..=0x1F => CharClass::Control,
+
+            // Digits
+            b'0'..=b'9' => CharClass::Digit,
+
+            // Structural characters
+            b'"' => CharClass::Quote,
+            b'{' => CharClass::LeftBrace,
+            b'}' => CharClass::RightBrace,
+            b'[' => CharClass::LeftBracket,
+            b']' => CharClass::RightBracket,
+            b',' => CharClass::Comma,
+            b':' => CharClass::Colon,
+            b'-' => CharClass::Minus,
+
+            // Identifiers
+            b't' | b'f' | b'n' => CharClass::Ident,
+
+            _ => CharClass::Error,
+        };
+        i += 1;
+    }
+    table
+};
+
+trait EventExt<'a> {
+    fn str(self) -> Result<&'a str>;
+}
+
+impl<'a> EventExt<'a> for Event<'a> {
+    fn str(self) -> Result<&'a str> {
+        match self {
+            Str(s) => Ok(s),
+            _ => Err(Error),
+        }
+    }
+}
+
 fn from_str_impl(j: &str, visitor: &mut dyn Visitor) -> Result<()> {
     let visitor = NonNull::from(visitor);
     let mut visitor = unsafe { extend_lifetime!(visitor as NonNull<dyn Visitor>) };
@@ -122,12 +188,12 @@ fn from_str_impl(j: &str, visitor: &mut dyn Visitor) -> Result<()> {
         };
 
         loop {
-            match de.parse_whitespace().unwrap_or(b'\0') {
-                b',' if accept_comma => {
+            match de.skip_whitespace_and_peek_class().map(|(b, _)| b) {
+                Some(b',') if accept_comma => {
                     de.bump();
                     break;
                 }
-                close @ (b']' | b'}') => {
+                Some(close @ (b']' | b'}')) => {
                     de.bump();
                     match &mut layer {
                         Layer::Seq(seq) if close == b']' => seq.finish()?,
@@ -160,16 +226,16 @@ fn from_str_impl(j: &str, visitor: &mut dyn Visitor) -> Result<()> {
                 de.stack.push((outer, Layer::Seq(seq)));
             }
             Layer::Map(mut map) => {
-                match de.parse_whitespace() {
-                    Some(b'"') => de.bump(),
+                match de.skip_whitespace_and_peek_class() {
+                    Some((b'"', _)) => { }
                     _ => return Err(Error),
                 }
-                let key = de.parse_str()?;
+                let key = de.event()?.str()?; // Optimized event call
                 let entry = map.key(key)?;
                 let next = NonNull::from(entry);
                 visitor = unsafe { extend_lifetime!(next as NonNull<dyn Visitor>) };
-                match de.parse_whitespace() {
-                    Some(b':') => de.bump(),
+                match de.skip_whitespace_and_peek_class() {
+                    Some((b':', _)) => de.bump(),
                     _ => return Err(Error),
                 }
                 de.stack.push((outer, Layer::Map(map)));
@@ -177,7 +243,7 @@ fn from_str_impl(j: &str, visitor: &mut dyn Visitor) -> Result<()> {
         }
     }
 
-    match de.parse_whitespace() {
+    match de.skip_whitespace_and_peek_class() {
         Some(_) => Err(Error),
         None => Ok(()),
     }
@@ -371,17 +437,17 @@ impl<'a, 'b> Deserializer<'a, 'b> {
         Ok(n)
     }
 
-    fn parse_whitespace(&mut self) -> Option<u8> {
-        loop {
-            match self.peek() {
-                Some(b' ' | b'\n' | b'\t' | b'\r') => {
-                    self.bump();
-                }
-                other => {
-                    return other;
-                }
+    #[inline(always)]
+    fn skip_whitespace_and_peek_class(&mut self) -> Option<(u8, CharClass)> {
+        while self.pos < self.input.len() {
+            let byte = self.input[self.pos];
+            let class = CLASSIFY[byte as usize];
+            if class != CharClass::Whitespace {
+                return Some((byte, class));
             }
+            self.pos += 1;
         }
+        None
     }
 
     fn parse_ident(&mut self, ident: &[u8]) -> Result<()> {
@@ -598,9 +664,10 @@ impl<'a, 'b> Deserializer<'a, 'b> {
     }
 
     fn event(&mut self) -> Result<Event> {
-        let Some(peek) = self.parse_whitespace() else {
+        let Some((peek, _)) = self.skip_whitespace_and_peek_class() else {
             return Err(Error);
         };
+
         self.bump();
         match peek {
             b'"' => self.parse_str().map(Str),
