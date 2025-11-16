@@ -4,6 +4,39 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+mod writer {
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    pub trait Write {
+        fn write_str(&mut self, s: &str);
+        fn write_char(&mut self, c: char);
+    }
+
+    impl Write for String {
+        #[inline]
+        fn write_str(&mut self, s: &str) {
+            self.push_str(s);
+        }
+        #[inline]
+        fn write_char(&mut self, c: char) {
+            self.push(c);
+        }
+    }
+
+    impl Write for Vec<u8> {
+        #[inline]
+        fn write_str(&mut self, s: &str) {
+            self.extend_from_slice(s.as_bytes());
+        }
+        #[inline]
+        fn write_char(&mut self, c: char) {
+            let mut buf = [0u8; 4];
+            self.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        }
+    }
+}
+
 /// Serialize any serializable type into a JSON string.
 ///
 /// ```rust
@@ -29,7 +62,18 @@ pub fn to_string<T>(value: &T) -> String
 where
     T: ?Sized + Serialize,
 {
-    to_string_impl(&value)
+    let mut out = String::with_capacity(128);
+    to_writer_impl(&value, &mut out);
+    out
+}
+
+pub fn to_vec<T>(value: &T) -> Vec<u8>
+where
+    T: ?Sized + Serialize,
+{
+    let mut out = Vec::with_capacity(128);
+    to_writer_impl(&value, &mut out);
+    out
 }
 
 struct Serializer<'a> {
@@ -41,27 +85,29 @@ enum Layer<'a> {
     Map(Box<dyn Map + 'a>),
 }
 
-fn to_string_impl(value: &dyn Serialize) -> String {
-    let mut out = String::with_capacity(128);
+fn to_writer_impl<W>(value: &dyn Serialize, out: &mut W)
+where
+    W: ?Sized + writer::Write,
+{
     let mut serializer = Serializer { stack: Vec::new() };
     let mut fragment = value.begin();
 
     'outer: loop {
         match fragment {
-            Fragment::Null => out.push_str("null"),
-            Fragment::Bool(b) => out.push_str(if b { "true" } else { "false" }),
-            Fragment::Str(s) => escape_str(&s, &mut out),
-            Fragment::U64(n) => out.push_str(itoa::Buffer::new().format(n)),
-            Fragment::I64(n) => out.push_str(itoa::Buffer::new().format(n)),
+            Fragment::Null => out.write_str("null"),
+            Fragment::Bool(b) => out.write_str(if b { "true" } else { "false" }),
+            Fragment::Str(s) => escape_str(&s, out),
+            Fragment::U64(n) => out.write_str(itoa::Buffer::new().format(n)),
+            Fragment::I64(n) => out.write_str(itoa::Buffer::new().format(n)),
             Fragment::F64(n) => {
                 if n.is_finite() {
-                    out.push_str(ryu::Buffer::new().format_finite(n));
+                    out.write_str(ryu::Buffer::new().format_finite(n));
                 } else {
-                    out.push_str("null");
+                    out.write_str("null");
                 }
             }
             Fragment::Seq(mut seq) => {
-                out.push('[');
+                out.write_char('[');
                 // invariant: `seq` must outlive `first`
                 match unsafe { extend_lifetime!(seq.next() as Option<&dyn Serialize>) } {
                     Some(first) => {
@@ -69,22 +115,22 @@ fn to_string_impl(value: &dyn Serialize) -> String {
                         fragment = first.begin();
                         continue 'outer;
                     }
-                    None => out.push(']'),
+                    None => out.write_char(']'),
                 }
             }
             Fragment::Map(mut map) => {
-                out.push('{');
+                out.write_char('{');
                 // invariant: `map` must outlive `first`
                 match unsafe { extend_lifetime!(map.next() as Option<(Cow<str>, &dyn Serialize)>) }
                 {
                     Some((key, first)) => {
-                        escape_str(&key, &mut out);
-                        out.push(':');
+                        escape_str(&key, out);
+                        out.write_char(':');
                         serializer.stack.push(Layer::Map(map));
                         fragment = first.begin();
                         continue 'outer;
                     }
-                    None => out.push('}'),
+                    None => out.write_char('}'),
                 }
             }
         }
@@ -95,12 +141,12 @@ fn to_string_impl(value: &dyn Serialize) -> String {
                     // invariant: `seq` must outlive `next`
                     match unsafe { extend_lifetime!(seq.next() as Option<&dyn Serialize>) } {
                         Some(next) => {
-                            out.push(',');
+                            out.write_char(',');
                             fragment = next.begin();
                             break;
                         }
                         None => {
-                            out.push(']');
+                            out.write_char(']');
                             serializer.stack.pop();
                         }
                     }
@@ -111,26 +157,29 @@ fn to_string_impl(value: &dyn Serialize) -> String {
                         extend_lifetime!(map.next() as Option<(Cow<str>, &dyn Serialize)>)
                     } {
                         Some((key, next)) => {
-                            out.push(',');
-                            escape_str(&key, &mut out);
-                            out.push(':');
+                            out.write_char(',');
+                            escape_str(&key, out);
+                            out.write_char(':');
                             fragment = next.begin();
                             break;
                         }
                         None => {
-                            out.push('}');
+                            out.write_char('}');
                             serializer.stack.pop();
                         }
                     }
                 }
-                None => return out,
+                None => return,
             }
         }
     }
 }
 
-fn escape_str(value: &str, out: &mut String) {
-    out.push('"');
+fn escape_str<W>(value: &str, out: &mut W)
+where
+    W: ?Sized + writer::Write,
+{
+    out.write_char('"');
 
     let mut start = 0;
     let bytes = value.as_bytes();
@@ -142,7 +191,7 @@ fn escape_str(value: &str, out: &mut String) {
         }
 
         if start < i {
-            out.push_str(unsafe { core::str::from_utf8_unchecked(&bytes[start..i]) });
+            out.write_str(unsafe { core::str::from_utf8_unchecked(&bytes[start..i]) });
         }
 
         let escaped_char = match escape {
@@ -154,33 +203,32 @@ fn escape_str(value: &str, out: &mut String) {
             QU => "\\\"",
             BS => "\\\\",
             U => {
-                static mut BUF: [u8; 6] = [b'\\', b'u', b'0', b'0', 0, 0];
                 static HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
-                
-                unsafe {
-                    let buf_ptr = &raw mut BUF;
-                    let hex_ptr = &raw const HEX_DIGITS;
-                    (*buf_ptr)[4] = (*hex_ptr)[(byte >> 4) as usize];
-                    (*buf_ptr)[5] = (*hex_ptr)[(byte & 0xF) as usize];
-                    out.push_str(core::str::from_utf8_unchecked(&*buf_ptr));
-                } 
+                let mut buf = [0u8; 6];
+                buf[0] = b'\\';
+                buf[1] = b'u';
+                buf[2] = b'0';
+                buf[3] = b'0';
+                buf[4] = HEX_DIGITS[(byte >> 4) as usize];
+                buf[5] = HEX_DIGITS[(byte & 0xF) as usize];
+
+                out.write_str(unsafe { core::str::from_utf8_unchecked(&buf) });
                 start = i + 1;
                 continue;
             }
             _ => unreachable!(),
         };
-        out.push_str(escaped_char);
+        out.write_str(escaped_char);
 
         start = i + 1;
     }
 
     if start < bytes.len() {
-        out.push_str(unsafe { core::str::from_utf8_unchecked(&bytes[start..]) });
+        out.write_str(unsafe { core::str::from_utf8_unchecked(&bytes[start..]) });
     }
 
-    out.push('"');
+    out.write_char('"');
 }
-
 
 const BB: u8 = b'b'; // \x08
 const TT: u8 = b't'; // \x09

@@ -5,6 +5,7 @@
 
 mod ser;
 pub use self::ser::to_string;
+pub use self::ser::to_vec;
 
 mod de;
 pub use self::de::from_str;
