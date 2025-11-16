@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use core::char;
 use core::ptr::NonNull;
 use core::str;
+use std::is_x86_feature_detected;
 
 /// Deserialize a JSON string into any deserializable type.
 ///
@@ -245,21 +246,24 @@ impl<'a, 'b> Deserializer<'a, 'b> {
         self.buffer.clear();
 
         loop {
-            while self.pos < self.input.len() && !ESCAPE[usize::from(self.input[self.pos])] {
-                self.pos += 1;
-            }
+            let remaining_slice = &self.input[self.pos..];
+            let offset = find_next_special_character(remaining_slice);
+            self.pos += offset;
+
             if self.pos == self.input.len() {
                 return Err(Error);
             }
+
             match self.input[self.pos] {
                 b'"' => {
                     if self.buffer.is_empty() {
                         // Fast path: return a slice of the raw JSON without any
-                        // copying.
+                        // copying because no escape sequences were found.
                         let borrowed = &self.input[start..self.pos];
                         self.pos += 1;
                         return Ok(result(borrowed));
                     } else {
+                        // Slow path: we have accumulated escaped characters in the buffer.
                         self.buffer.extend_from_slice(&self.input[start..self.pos]);
                         self.pos += 1;
                         return Ok(result(&self.buffer));
@@ -690,30 +694,93 @@ static POW10: [f64; 309] = [
     1e300, 1e301, 1e302, 1e303, 1e304, 1e305, 1e306, 1e307, 1e308,
 ];
 
-const CT: bool = true; // control character \x00..=\x1F
-const QU: bool = true; // quote \x22
-const BS: bool = true; // backslash \x5C
-const O: bool = false; // allow unescaped
+// -------------- SIMD --------------
 
-// Lookup table of bytes that must be escaped. A value of true at index i means
-// that byte i requires an escape sequence in the input.
-#[rustfmt::skip]
-static ESCAPE: [bool; 256] = [
-    //   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
-    CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, // 0
-    CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, CT, // 1
-     O,  O, QU,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // 2
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // 3
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // 4
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, BS,  O,  O,  O, // 5
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // 6
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // 7
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // 8
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // 9
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // A
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // B
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // C
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // D
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // E
-     O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O,  O, // F
-];
+fn find_next_special_character(slice: &[u8]) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            return unsafe { find_special_char_avx2(slice) };
+        }
+        if is_x86_feature_detected!("sse2") {
+            return unsafe { find_special_char_sse2(slice) };
+        }
+    }
+    find_special_char_scalar(slice)
+}
+
+#[inline]
+fn find_special_char_scalar(slice: &[u8]) -> usize {
+    slice
+        .iter()
+        .position(|&b| b == b'\\' || b == b'"')
+        .unwrap_or(slice.len())
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+#[inline]
+unsafe fn find_special_char_avx2(slice: &[u8]) -> usize {
+    use std::arch::x86_64::*;
+
+    let mut i = 0;
+    let len = slice.len();
+
+    let quote_v = _mm256_set1_epi8(b'"' as i8);
+    let escape_v = _mm256_set1_epi8(b'\\' as i8);
+
+    while i + 32 <= len {
+        let chunk = _mm256_loadu_si256(slice.as_ptr().add(i) as *const _);
+
+        let eq_quote = _mm256_cmpeq_epi8(chunk, quote_v);
+        let eq_escape = _mm256_cmpeq_epi8(chunk, escape_v);
+
+        let mask = _mm256_movemask_epi8(_mm256_or_si256(eq_quote, eq_escape));
+
+        if mask != 0 {
+            return i + mask.trailing_zeros() as usize;
+        }
+
+        i += 32;
+    }
+
+    if i < len {
+        i += find_special_char_scalar(&slice[i..]);
+    }
+
+    i
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse2")]
+#[inline]
+unsafe fn find_special_char_sse2(slice: &[u8]) -> usize {
+    use std::arch::x86_64::*;
+
+    let mut i = 0;
+    let len = slice.len();
+
+    let quote_v = _mm_set1_epi8(b'"' as i8);
+    let escape_v = _mm_set1_epi8(b'\\' as i8);
+
+    while i + 16 <= len {
+        let chunk = _mm_loadu_si128(slice.as_ptr().add(i) as *const _);
+
+        let eq_quote = _mm_cmpeq_epi8(chunk, quote_v);
+        let eq_escape = _mm_cmpeq_epi8(chunk, escape_v);
+
+        let mask = _mm_movemask_epi8(_mm_or_si128(eq_quote, eq_escape));
+
+        if mask != 0 {
+            return i + mask.trailing_zeros() as usize;
+        }
+
+        i += 16;
+    }
+
+    if i < len {
+        i += find_special_char_scalar(&slice[i..]);
+    }
+
+    i
+}
