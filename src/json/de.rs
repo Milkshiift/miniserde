@@ -33,7 +33,16 @@ where
     T: Deserialize,
 {
     let mut out = None;
-    from_str_impl(j, T::begin(&mut out))?;
+    from_slice_impl(j.as_bytes(), false, T::begin(&mut out))?;
+    out.ok_or(Error)
+}
+
+pub fn from_slice<T>(j: &[u8]) -> Result<T>
+where
+    T: Deserialize,
+{
+    let mut out = None;
+    from_slice_impl(j, true, T::begin(&mut out))?;
     out.ok_or(Error)
 }
 
@@ -42,6 +51,9 @@ struct Deserializer<'a, 'b> {
     pos: usize,
     buffer: Vec<u8>,
     stack: Vec<(NonNull<dyn Visitor>, Layer<'b>)>,
+    /// If true, string segments from the input must be validated as UTF-8.
+    /// This is true for `from_slice` and false for `from_str`.
+    validate_utf8: bool,
 }
 
 enum Layer<'a> {
@@ -124,14 +136,20 @@ impl<'a> EventExt<'a> for Event<'a> {
     }
 }
 
-fn from_str_impl(j: &str, visitor: &mut dyn Visitor) -> Result<()> {
+
+fn from_slice_impl(
+    j: &[u8],
+    validate_utf8: bool,
+    visitor: &mut dyn Visitor,
+) -> Result<()> {
     let visitor = NonNull::from(visitor);
     let mut visitor = unsafe { extend_lifetime!(visitor as NonNull<dyn Visitor>) };
     let mut de = Deserializer {
-        input: j.as_bytes(),
+        input: j,
         pos: 0,
         buffer: Vec::new(),
         stack: Vec::new(),
+        validate_utf8,
     };
 
     'outer: loop {
@@ -227,7 +245,7 @@ fn from_str_impl(j: &str, visitor: &mut dyn Visitor) -> Result<()> {
             }
             Layer::Map(mut map) => {
                 match de.skip_whitespace_and_peek_class() {
-                    Some((b'"', _)) => { }
+                    Some((b'"', _)) => {}
                     _ => return Err(Error),
                 }
                 let key = de.event()?.str()?; // Optimized event call
@@ -268,6 +286,7 @@ macro_rules! overflow {
     };
 }
 
+
 impl<'a, 'b> Deserializer<'a, 'b> {
     fn next(&mut self) -> Option<u8> {
         if self.pos < self.input.len() {
@@ -299,14 +318,8 @@ impl<'a, 'b> Deserializer<'a, 'b> {
         self.pos += 1;
     }
 
-    fn parse_str(&mut self) -> Result<&str> {
-        fn result(bytes: &[u8]) -> &str {
-            // The deserialization input came in as &str with a UTF-8 guarantee,
-            // and the \u-escapes are checked along the way, so don't need to
-            // check here.
-            unsafe { str::from_utf8_unchecked(bytes) }
-        }
 
+    fn parse_str(&mut self) -> Result<&'_ str> {
         // Index of the first byte not yet copied into the scratch space.
         let mut start = self.pos;
         self.buffer.clear();
@@ -322,26 +335,44 @@ impl<'a, 'b> Deserializer<'a, 'b> {
 
             match self.input[self.pos] {
                 b'"' => {
+                    let final_chunk = &self.input[start..self.pos];
+                    self.pos += 1; // Consume the closing quote
+
                     if self.buffer.is_empty() {
-                        // Fast path: return a slice of the raw JSON without any
-                        // copying because no escape sequences were found.
-                        let borrowed = &self.input[start..self.pos];
-                        self.pos += 1;
-                        return Ok(result(borrowed));
+                        // Fast path: No escapes were found. We can borrow from the input.
+                        // We still need to validate if the input was &[u8].
+                        if self.validate_utf8 {
+                            return str::from_utf8(final_chunk).map_err(|_| Error);
+                        } else {
+                            // Input was &str, so it's guaranteed to be valid UTF-8.
+                            return Ok(unsafe { str::from_utf8_unchecked(final_chunk) });
+                        }
                     } else {
-                        // Slow path: we have accumulated escaped characters in the buffer.
-                        self.buffer.extend_from_slice(&self.input[start..self.pos]);
-                        self.pos += 1;
-                        return Ok(result(&self.buffer));
+                        // Slow path: We have processed escapes. Append the last chunk.
+                        if self.validate_utf8 {
+                            // Validate the final chunk before appending.
+                            str::from_utf8(final_chunk).map_err(|_| Error)?;
+                        }
+                        self.buffer.extend_from_slice(final_chunk);
+
+                        // The buffer is guaranteed to be valid UTF-8 because all appended
+                        // chunks were validated and all escaped chars are valid.
+                        return Ok(unsafe { str::from_utf8_unchecked(&self.buffer) });
                     }
                 }
                 b'\\' => {
-                    self.buffer.extend_from_slice(&self.input[start..self.pos]);
-                    self.pos += 1;
+                    let chunk = &self.input[start..self.pos];
+                    if self.validate_utf8 {
+                        // Validate the chunk of bytes before we push it to the buffer.
+                        str::from_utf8(chunk).map_err(|_| Error)?;
+                    }
+                    self.buffer.extend_from_slice(chunk);
+                    self.pos += 1; // Consume the backslash
                     self.parse_escape()?;
                     start = self.pos;
                 }
                 _ => {
+                    // This case should be unreachable due to find_next_special_character
                     return Err(Error);
                 }
             }
