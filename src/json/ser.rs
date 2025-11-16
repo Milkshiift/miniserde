@@ -41,21 +41,12 @@ enum Layer<'a> {
     Map(Box<dyn Map + 'a>),
 }
 
-impl<'a> Drop for Serializer<'a> {
-    fn drop(&mut self) {
-        // Drop layers in reverse order.
-        while !self.stack.is_empty() {
-            self.stack.pop();
-        }
-    }
-}
-
 fn to_string_impl(value: &dyn Serialize) -> String {
-    let mut out = String::new();
+    let mut out = String::with_capacity(128);
     let mut serializer = Serializer { stack: Vec::new() };
     let mut fragment = value.begin();
 
-    loop {
+    'outer: loop {
         match fragment {
             Fragment::Null => out.push_str("null"),
             Fragment::Bool(b) => out.push_str(if b { "true" } else { "false" }),
@@ -76,7 +67,7 @@ fn to_string_impl(value: &dyn Serialize) -> String {
                     Some(first) => {
                         serializer.stack.push(Layer::Seq(seq));
                         fragment = first.begin();
-                        continue;
+                        continue 'outer;
                     }
                     None => out.push(']'),
                 }
@@ -91,7 +82,7 @@ fn to_string_impl(value: &dyn Serialize) -> String {
                         out.push(':');
                         serializer.stack.push(Layer::Map(map));
                         fragment = first.begin();
-                        continue;
+                        continue 'outer;
                     }
                     None => out.push('}'),
                 }
@@ -108,7 +99,10 @@ fn to_string_impl(value: &dyn Serialize) -> String {
                             fragment = next.begin();
                             break;
                         }
-                        None => out.push(']'),
+                        None => {
+                            out.push(']');
+                            serializer.stack.pop();
+                        }
                     }
                 }
                 Some(Layer::Map(map)) => {
@@ -123,23 +117,23 @@ fn to_string_impl(value: &dyn Serialize) -> String {
                             fragment = next.begin();
                             break;
                         }
-                        None => out.push('}'),
+                        None => {
+                            out.push('}');
+                            serializer.stack.pop();
+                        }
                     }
                 }
                 None => return out,
             }
-            serializer.stack.pop();
         }
     }
 }
 
-// Clippy false positive: https://github.com/rust-lang/rust-clippy/issues/5169
-#[allow(clippy::zero_prefixed_literal)]
 fn escape_str(value: &str, out: &mut String) {
     out.push('"');
 
-    let bytes = value.as_bytes();
     let mut start = 0;
+    let bytes = value.as_bytes();
 
     for (i, &byte) in bytes.iter().enumerate() {
         let escape = ESCAPE[byte as usize];
@@ -148,35 +142,45 @@ fn escape_str(value: &str, out: &mut String) {
         }
 
         if start < i {
-            out.push_str(&value[start..i]);
+            out.push_str(unsafe { core::str::from_utf8_unchecked(&bytes[start..i]) });
         }
 
-        match escape {
-            self::BB => out.push_str("\\b"),
-            self::TT => out.push_str("\\t"),
-            self::NN => out.push_str("\\n"),
-            self::FF => out.push_str("\\f"),
-            self::RR => out.push_str("\\r"),
-            self::QU => out.push_str("\\\""),
-            self::BS => out.push_str("\\\\"),
-            self::U => {
+        let escaped_char = match escape {
+            BB => "\\b",
+            TT => "\\t",
+            NN => "\\n",
+            FF => "\\f",
+            RR => "\\r",
+            QU => "\\\"",
+            BS => "\\\\",
+            U => {
+                static mut BUF: [u8; 6] = [b'\\', b'u', b'0', b'0', 0, 0];
                 static HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
-                out.push_str("\\u00");
-                out.push(HEX_DIGITS[(byte >> 4) as usize] as char);
-                out.push(HEX_DIGITS[(byte & 0xF) as usize] as char);
+                
+                unsafe {
+                    let buf_ptr = &raw mut BUF;
+                    let hex_ptr = &raw const HEX_DIGITS;
+                    (*buf_ptr)[4] = (*hex_ptr)[(byte >> 4) as usize];
+                    (*buf_ptr)[5] = (*hex_ptr)[(byte & 0xF) as usize];
+                    out.push_str(core::str::from_utf8_unchecked(&*buf_ptr));
+                } 
+                start = i + 1;
+                continue;
             }
             _ => unreachable!(),
-        }
+        };
+        out.push_str(escaped_char);
 
         start = i + 1;
     }
 
-    if start != bytes.len() {
-        out.push_str(&value[start..]);
+    if start < bytes.len() {
+        out.push_str(unsafe { core::str::from_utf8_unchecked(&bytes[start..]) });
     }
 
     out.push('"');
 }
+
 
 const BB: u8 = b'b'; // \x08
 const TT: u8 = b't'; // \x09
