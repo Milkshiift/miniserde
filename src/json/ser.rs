@@ -1,3 +1,4 @@
+use crate::json::{Array, Number, Object, Value};
 use crate::ser::{Fragment, Map, Seq, Serialize};
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
@@ -33,6 +34,121 @@ mod writer {
         fn write_char(&mut self, c: char) {
             let mut buf = [0u8; 4];
             self.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        }
+    }
+}
+
+/// Convert any serializable type into a `miniserde::json::Value`.
+///
+/// ```rust
+/// use miniserde::{json, Serialize};
+/// use miniserde::json::Value;
+///
+/// #[derive(Serialize)]
+/// struct Example {
+///     code: u32,
+///     message: String,
+/// }
+///
+/// fn main() {
+///     let example = Example {
+///         code: 200,
+///         message: "reminiscent of Serde".to_owned(),
+///     };
+///
+///     let value: Value = json::to_value(&example);
+///     println!("{:?}", value);
+/// }
+/// ```
+pub fn to_value<T>(value: &T) -> Value
+where
+    T: ?Sized + Serialize,
+{
+    let mut stack = Vec::new();
+    let mut fragment = value.begin();
+
+    enum Layer<'a> {
+        Seq(Box<dyn Seq + 'a>, Array),
+        Map(Box<dyn Map + 'a>, Object, Option<String>),
+    }
+
+    loop {
+        let val = match fragment {
+            Fragment::Null => Value::Null,
+            Fragment::Bool(b) => Value::Bool(b),
+            Fragment::Str(s) => Value::String(s.into_owned()),
+            Fragment::U64(n) => Value::Number(Number::U64(n)),
+            Fragment::I64(n) => Value::Number(Number::I64(n)),
+            Fragment::F64(n) => Value::Number(Number::F64(n)),
+            Fragment::Seq(mut seq) => {
+                let next = unsafe { extend_lifetime!(seq.next() as Option<&dyn Serialize>) };
+                match next {
+                    Some(first) => {
+                        stack.push(Layer::Seq(seq, Array::new()));
+                        fragment = first.begin();
+                        continue;
+                    }
+                    None => Value::Array(Array::new()),
+                }
+            }
+            Fragment::Map(mut map) => {
+                let next = unsafe {
+                    extend_lifetime!(map.next() as Option<(Cow<str>, &dyn Serialize)>)
+                };
+                match next {
+                    Some((key, first)) => {
+                        stack.push(Layer::Map(map, Object::new(), Some(key.into_owned())));
+                        fragment = first.begin();
+                        continue;
+                    }
+                    None => Value::Object(Object::new()),
+                }
+            }
+        };
+
+        let mut current_val = val;
+        loop {
+            match stack.last_mut() {
+                None => return current_val,
+                Some(Layer::Seq(seq, arr)) => {
+                    arr.push(current_val);
+                    let next = unsafe { extend_lifetime!(seq.next() as Option<&dyn Serialize>) };
+                    match next {
+                        Some(next_elem) => {
+                            fragment = next_elem.begin();
+                            break;
+                        }
+                        None => {
+                            let arr = match stack.pop() {
+                                Some(Layer::Seq(_, a)) => a,
+                                _ => unreachable!(),
+                            };
+                            current_val = Value::Array(arr);
+                        }
+                    }
+                }
+                Some(Layer::Map(map, obj, key_opt)) => {
+                    let key = key_opt.take().expect("Map layer without pending key");
+                    obj.insert(key, current_val);
+                    let next = unsafe {
+                        extend_lifetime!(map.next() as Option<(Cow<str>, &dyn Serialize)>)
+                    };
+                    match next {
+                        Some((key, next_elem)) => {
+                            *key_opt = Some(key.into_owned());
+                            fragment = next_elem.begin();
+                            break;
+                        }
+                        None => {
+                            let obj = match stack.pop() {
+                                Some(Layer::Map(_, o, _)) => o,
+                                _ => unreachable!(),
+                            };
+                            current_val = Value::Object(obj);
+                        }
+                    }
+                }
+            }
         }
     }
 }
