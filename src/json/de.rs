@@ -1,8 +1,11 @@
 use self::Event::*;
 use crate::de::{Deserialize, Map, Seq, Visitor};
 use crate::error::{Error, Result};
+use crate::json::{Number, Value};
 use crate::ptr::NonuniqueBox;
-use alloc::vec::Vec;
+use alloc::collections::btree_map;
+use alloc::string::String;
+use alloc::vec::{self, Vec};
 use core::char;
 use core::ptr::NonNull;
 use core::str;
@@ -46,6 +49,15 @@ where
     out.ok_or(Error)
 }
 
+pub fn from_value<T>(value: Value) -> Result<T>
+where
+    T: Deserialize,
+{
+    let mut out = None;
+    from_value_impl(value, T::begin(&mut out))?;
+    out.ok_or(Error)
+}
+
 struct Deserializer<'a, 'b> {
     input: &'a [u8],
     pos: usize,
@@ -73,19 +85,19 @@ impl<'a, 'b> Drop for Deserializer<'a, 'b> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 enum CharClass {
-    Whitespace, // ' ', '\n', '\r', '\t'
-    Control,    // Invalid characters \x00-\x1F
-    Digit,      // '0' through '9'
-    Quote,      // '"'
-    LeftBrace,  // '{'
-    RightBrace, // '}'
-    LeftBracket,// '['
-    RightBracket,// ']'
-    Comma,      // ','
-    Colon,      // ':'
-    Minus,      // '-'
-    Ident,      // 't', 'f', 'n'
-    Error,      // Any other byte that is invalid in JSON
+    Whitespace,  // ' ', '\n', '\r', '\t'
+    Control,     // Invalid characters \x00-\x1F
+    Digit,       // '0' through '9'
+    Quote,       // '"'
+    LeftBrace,   // '{'
+    RightBrace,  // '}'
+    LeftBracket, // '['
+    RightBracket, // ']'
+    Comma,       // ','
+    Colon,       // ':'
+    Minus,       // '-'
+    Ident,       // 't', 'f', 'n'
+    Error,       // Any other byte that is invalid in JSON
 }
 
 const CLASSIFY: [CharClass; 256] = {
@@ -136,6 +148,108 @@ impl<'a> EventExt<'a> for Event<'a> {
     }
 }
 
+fn from_value_impl(value: Value, visitor: &mut dyn Visitor) -> Result<()> {
+    let visitor = NonNull::from(visitor);
+    let mut visitor = unsafe { extend_lifetime!(visitor as NonNull<dyn Visitor>) };
+
+    struct State {
+        layer: Layer,
+    }
+
+    enum Layer {
+        Seq(vec::IntoIter<Value>, NonuniqueBox<dyn Seq + 'static>),
+        Map(btree_map::IntoIter<String, Value>, NonuniqueBox<dyn Map + 'static>),
+    }
+
+    let mut stack: Vec<State> = Vec::new();
+    let mut current_value = Some(value);
+
+    'outer: loop {
+        if let Some(top) = stack.last_mut() {
+            match &mut top.layer {
+                Layer::Seq(iter, seq) => match iter.next() {
+                    Some(v) => {
+                        let element = seq.element()?;
+                        visitor =
+                            unsafe { extend_lifetime!(NonNull::from(element) as NonNull<dyn Visitor>) };
+                        current_value = Some(v);
+                    }
+                    None => {
+                        seq.finish()?;
+                        stack.pop();
+                        if stack.is_empty() {
+                            return Ok(());
+                        }
+                        continue 'outer;
+                    }
+                },
+                Layer::Map(iter, map) => match iter.next() {
+                    Some((k, v)) => {
+                        let value_visitor = map.key(&k)?;
+                        visitor = unsafe {
+                            extend_lifetime!(NonNull::from(value_visitor) as NonNull<dyn Visitor>)
+                        };
+                        current_value = Some(v);
+                    }
+                    None => {
+                        map.finish()?;
+                        stack.pop();
+                        if stack.is_empty() {
+                            return Ok(());
+                        }
+                        continue 'outer;
+                    }
+                },
+            }
+        } else if current_value.is_none() {
+            return Ok(());
+        }
+
+        if let Some(val) = current_value.take() {
+            let visitor_mut = unsafe { &mut *visitor.as_ptr() };
+            match val {
+                Value::Null => visitor_mut.null()?,
+                Value::Bool(b) => visitor_mut.boolean(b)?,
+                Value::Number(n) => match n {
+                    Number::U64(u) => visitor_mut.nonnegative(u)?,
+                    Number::I64(i) => {
+                        if i >= 0 {
+                            visitor_mut.nonnegative(i as u64)?;
+                        } else {
+                            visitor_mut.negative(i)?;
+                        }
+                    }
+                    Number::F64(f) => visitor_mut.float(f)?,
+                },
+                Value::String(s) => visitor_mut.string(&s)?,
+                Value::Array(arr) => {
+                    let seq = visitor_mut.seq()?;
+                    let seq = unsafe {
+                        extend_lifetime!(NonuniqueBox::from(seq) as NonuniqueBox<dyn Seq>)
+                    };
+                    stack.push(State {
+                        layer: Layer::Seq(arr.into_iter(), seq),
+                    });
+                    continue 'outer;
+                }
+                Value::Object(obj) => {
+                    let map = visitor_mut.map()?;
+                    let map = unsafe {
+                        extend_lifetime!(NonuniqueBox::from(map) as NonuniqueBox<dyn Map>)
+                    };
+                    stack.push(State {
+                        layer: Layer::Map(obj.into_iter(), map),
+                    });
+                    continue 'outer;
+                }
+            }
+        }
+
+        if stack.is_empty() {
+            return Ok(());
+        }
+    }
+}
 
 fn from_slice_impl(
     j: &[u8],
