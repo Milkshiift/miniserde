@@ -37,6 +37,61 @@ pub enum Value {
     Object(Object),
 }
 
+impl Value {
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Value::Number(Number::U64(n)) => Some(*n),
+            Value::Number(Number::I64(n)) if *n >= 0 => Some(*n as u64),
+            _ => None,
+        }
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Value::Number(Number::I64(n)) => Some(*n),
+            Value::Number(Number::U64(n)) if *n <= i64::MAX as u64 => Some(*n as i64),
+            _ => None,
+        }
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            Value::Number(Number::F64(n)) => Some(*n),
+            Value::Number(Number::U64(n)) => Some(*n as f64),
+            Value::Number(Number::I64(n)) => Some(*n as f64),
+            _ => None,
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&Array> {
+        match self {
+            Value::Array(array) => Some(array),
+            _ => None,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&Object> {
+        match self {
+            Value::Object(object) => Some(object),
+            _ => None,
+        }
+    }
+}
+
 impl Default for Value {
     /// The default value is null.
     fn default() -> Self {
