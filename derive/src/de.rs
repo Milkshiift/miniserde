@@ -18,9 +18,9 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 fn try_expand(input: &DeriveInput) -> Result<TokenStream> {
     match &input.data {
         Data::Struct(DataStruct {
-            fields: Fields::Named(fields),
-            ..
-        }) => derive_struct(input, fields),
+                         fields: Fields::Named(fields),
+                         ..
+                     }) => derive_struct(input, fields),
         Data::Enum(enumeration) => derive_enum(input, enumeration),
         Data::Struct(_) => Err(Error::new(
             Span::call_site(),
@@ -36,6 +36,7 @@ fn try_expand(input: &DeriveInput) -> Result<TokenStream> {
 pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenStream> {
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let container_attrs = attr::get_container(input)?;
 
     let fieldname = fields.named.iter().map(|f| &f.ident).collect::<Vec<_>>();
     let fieldty = fields.named.iter().map(|f| &f.ty);
@@ -43,6 +44,30 @@ pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenS
         .named
         .iter()
         .map(attr::name_of_field)
+        .collect::<Result<Vec<_>>>()?;
+
+    let unwrap_logic = fields
+        .named
+        .iter()
+        .map(|f| {
+            let attrs = attr::get(f)?;
+            let field_ident = &f.ident;
+
+            // Priority: Field default -> Container default -> Error
+            match attrs.default {
+                attr::Default::Path(path) => Ok(quote!(.unwrap_or_else(#path))),
+                attr::Default::Default => Ok(quote!(.unwrap_or_default())),
+                attr::Default::None => match &container_attrs.default {
+                    attr::Default::Path(path) => {
+                        Ok(quote!(.unwrap_or_else(|| #path().#field_ident)))
+                    },
+                    attr::Default::Default => {
+                        Ok(quote!(.unwrap_or_else(|| <#ident #ty_generics as Default>::default().#field_ident)))
+                    },
+                    attr::Default::None => Ok(quote!(.take().ok_or(miniserde::Error)?)),
+                },
+            }
+        })
         .collect::<Result<Vec<_>>>()?;
 
     let wrapper_generics = bound::with_lifetime_bound(&input.generics, "'__a");
@@ -62,7 +87,11 @@ pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenS
             impl #impl_generics miniserde::Deserialize for #ident #ty_generics #bounded_where_clause {
                 fn begin(__out: &mut miniserde::#private::Option<Self>) -> &mut dyn miniserde::de::Visitor {
                     unsafe {
-                        &mut *miniserde::#private::ptr::addr_of_mut!(*__out).cast::<__Visitor #ty_generics>()
+                        &mut *{
+                            __out
+                            as *mut miniserde::#private::Option<Self>
+                            as *mut __Visitor #ty_generics
+                        }
                     }
                 }
             }
@@ -97,7 +126,7 @@ pub fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenS
 
                 fn finish(&mut self) -> miniserde::Result<()> {
                     #(
-                        let #fieldname = self.#fieldname.take().ok_or(miniserde::Error)?;
+                        let #fieldname = self.#fieldname.take() #unwrap_logic;
                     )*
                     *self.__out = miniserde::#private::Some(#ident {
                         #(
@@ -149,7 +178,11 @@ pub fn derive_enum(input: &DeriveInput, enumeration: &DataEnum) -> Result<TokenS
             impl miniserde::Deserialize for #ident {
                 fn begin(__out: &mut miniserde::#private::Option<Self>) -> &mut dyn miniserde::de::Visitor {
                     unsafe {
-                        &mut *miniserde::#private::ptr::addr_of_mut!(*__out).cast::<__Visitor>()
+                        &mut *{
+                            __out
+                            as *mut miniserde::#private::Option<Self>
+                            as *mut __Visitor
+                        }
                     }
                 }
             }
