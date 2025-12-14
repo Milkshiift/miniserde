@@ -173,10 +173,46 @@ where
     }
 }
 
+pub trait MapKey {
+    fn serialize_key(&self) -> Cow<str>;
+}
+
+impl MapKey for String {
+    fn serialize_key(&self) -> Cow<str> {
+        Cow::Borrowed(self)
+    }
+}
+
+impl MapKey for str {
+    fn serialize_key(&self) -> Cow<str> {
+        Cow::Borrowed(self)
+    }
+}
+
+impl MapKey for Cow<'_, str> {
+    fn serialize_key(&self) -> Cow<str> {
+        Cow::Borrowed(self)
+    }
+}
+
+macro_rules! map_key_to_string {
+    ($($t:ty)*) => {
+        $(
+            impl MapKey for $t {
+                fn serialize_key(&self) -> Cow<str> {
+                    Cow::Owned(self.to_string())
+                }
+            }
+        )*
+    };
+}
+
+map_key_to_string!(bool char u8 u16 u32 u64 u128 usize i8 i16 i32 i64 i128 isize);
+
 #[cfg(feature = "std")]
 impl<K, V, H> Serialize for HashMap<K, V, H>
 where
-    K: Hash + Eq + ToString,
+    K: MapKey + Hash + Eq,
     V: Serialize,
     H: BuildHasher,
 {
@@ -185,12 +221,12 @@ where
 
         impl<'a, K, V> Map for HashMapStream<'a, K, V>
         where
-            K: ToString,
+            K: MapKey,
             V: Serialize,
         {
             fn next(&mut self) -> Option<(Cow<str>, &dyn Serialize)> {
                 let (k, v) = self.0.next()?;
-                Some((Cow::Owned(k.to_string()), v as &dyn Serialize))
+                Some((k.serialize_key(), v as &dyn Serialize))
             }
         }
 
@@ -200,11 +236,24 @@ where
 
 impl<K, V> Serialize for BTreeMap<K, V>
 where
-    K: ToString,
+    K: MapKey + Ord,
     V: Serialize,
 {
     fn begin(&self) -> Fragment {
-        private::stream_btree_map(self)
+        struct BTreeMapStream<'a, K, V>(btree_map::Iter<'a, K, V>);
+
+        impl<'a, K, V> Map for BTreeMapStream<'a, K, V>
+        where
+            K: MapKey,
+            V: Serialize,
+        {
+            fn next(&mut self) -> Option<(Cow<str>, &dyn Serialize)> {
+                let (k, v) = self.0.next()?;
+                Some((k.serialize_key(), v as &dyn Serialize))
+            }
+        }
+
+        Fragment::Map(Box::new(BTreeMapStream(self.iter())))
     }
 }
 
@@ -226,29 +275,5 @@ impl private {
         }
 
         Fragment::Seq(Box::new(SliceStream(slice.iter())))
-    }
-
-    pub fn stream_btree_map<K, V>(map: &BTreeMap<K, V>) -> Fragment
-    where
-        K: ToString,
-        V: Serialize,
-    {
-        struct BTreeMapStream<'a, K, V>(btree_map::Iter<'a, K, V>)
-        where
-            K: 'a,
-            V: 'a;
-
-        impl<'a, K, V> Map for BTreeMapStream<'a, K, V>
-        where
-            K: ToString,
-            V: Serialize,
-        {
-            fn next(&mut self) -> Option<(Cow<str>, &dyn Serialize)> {
-                let (k, v) = self.0.next()?;
-                Some((Cow::Owned(k.to_string()), v as &dyn Serialize))
-            }
-        }
-
-        Fragment::Map(Box::new(BTreeMapStream(map.iter())))
     }
 }
