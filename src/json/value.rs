@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use core::fmt::{self, Debug};
 use core::mem;
+use core::ops::Index;
 use core::str;
 
 /// Any valid JSON value.
@@ -40,6 +41,30 @@ impl Default for Value {
     /// The default value is null.
     fn default() -> Self {
         Self::Null
+    }
+}
+
+static NULL: Value = Value::Null;
+
+impl Index<usize> for Value {
+    type Output = Value;
+
+    fn index(&self, index: usize) -> &Value {
+        match self {
+            Value::Array(arr) => arr.get(index).unwrap_or(&NULL),
+            _ => &NULL,
+        }
+    }
+}
+
+impl Index<&str> for Value {
+    type Output = Value;
+
+    fn index(&self, index: &str) -> &Value {
+        match self {
+            Value::Object(obj) => obj.get(index).unwrap_or(&NULL),
+            _ => &NULL,
+        }
     }
 }
 
