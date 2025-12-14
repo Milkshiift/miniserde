@@ -28,8 +28,8 @@ fn take(array: Array) -> Vec<Value> {
 }
 
 impl Array {
-    pub fn new() -> Self {
-        Array { inner: Vec::new() }
+    pub const fn new() -> Self {
+        Self { inner: Vec::new() }
     }
 }
 
@@ -49,7 +49,7 @@ impl DerefMut for Array {
 
 impl Clone for Array {
     fn clone(&self) -> Self {
-        Array {
+        Self {
             inner: self.inner.clone(),
         }
     }
@@ -91,7 +91,7 @@ impl FromIterator<Value> for Array {
     where
         I: IntoIterator<Item = Value>,
     {
-        Array {
+        Self {
             inner: Vec::from_iter(iter),
         }
     }

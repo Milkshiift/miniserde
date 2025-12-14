@@ -15,7 +15,7 @@ impl dyn Visitor {
     }
 }
 
-pub(crate) struct Ignore;
+pub struct Ignore;
 
 impl Visitor for Ignore {
     fn null(&mut self) -> Result<()> {
@@ -43,11 +43,11 @@ impl Visitor for Ignore {
     }
 
     fn seq(&mut self) -> Result<Box<dyn Seq + '_>> {
-        Ok(Box::new(Ignore))
+        Ok(Box::new(Self))
     }
 
     fn map(&mut self) -> Result<Box<dyn Map + '_>> {
-        Ok(Box::new(Ignore))
+        Ok(Box::new(Self))
     }
 }
 

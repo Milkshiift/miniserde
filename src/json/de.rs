@@ -302,7 +302,7 @@ impl<'a, 'b> Deserializer<'a, 'b> {
         self.next().unwrap_or(b'\0')
     }
 
-    fn peek(&mut self) -> Option<u8> {
+    fn peek(&self) -> Option<u8> {
         if self.pos < self.input.len() {
             Some(self.input[self.pos])
         } else {
@@ -310,7 +310,7 @@ impl<'a, 'b> Deserializer<'a, 'b> {
         }
     }
 
-    fn peek_or_nul(&mut self) -> u8 {
+    fn peek_or_nul(&self) -> u8 {
         self.peek().unwrap_or(b'\0')
     }
 
@@ -468,7 +468,6 @@ impl<'a, 'b> Deserializer<'a, 'b> {
         Ok(n)
     }
 
-    #[inline(always)]
     fn skip_whitespace_and_peek_class(&mut self) -> Option<(u8, CharClass)> {
         while self.pos < self.input.len() {
             let byte = self.input[self.pos];
@@ -818,8 +817,9 @@ fn find_special_char_scalar(slice: &[u8]) -> usize {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[inline]
+#[allow(clippy::cast_ptr_alignment)]
 unsafe fn find_special_char_avx2(slice: &[u8]) -> usize {
-    use std::arch::x86_64::*;
+    use std::arch::x86_64::{_mm256_set1_epi8, _mm256_loadu_si256, _mm256_cmpeq_epi8, _mm256_movemask_epi8, _mm256_or_si256, __m256i};
 
     let mut i = 0;
     let len = slice.len();
@@ -828,7 +828,7 @@ unsafe fn find_special_char_avx2(slice: &[u8]) -> usize {
     let escape_v = _mm256_set1_epi8(b'\\' as i8);
 
     while i + 32 <= len {
-        let chunk = _mm256_loadu_si256(slice.as_ptr().add(i) as *const _);
+        let chunk = _mm256_loadu_si256(slice.as_ptr().add(i) as *const __m256i);
 
         let eq_quote = _mm256_cmpeq_epi8(chunk, quote_v);
         let eq_escape = _mm256_cmpeq_epi8(chunk, escape_v);
@@ -852,8 +852,9 @@ unsafe fn find_special_char_avx2(slice: &[u8]) -> usize {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 #[inline]
+#[allow(clippy::cast_ptr_alignment)]
 unsafe fn find_special_char_sse2(slice: &[u8]) -> usize {
-    use std::arch::x86_64::*;
+    use std::arch::x86_64::{_mm_set1_epi8, _mm_loadu_si128, _mm_cmpeq_epi8, _mm_movemask_epi8, _mm_or_si128, __m128i};
 
     let mut i = 0;
     let len = slice.len();
@@ -862,7 +863,7 @@ unsafe fn find_special_char_sse2(slice: &[u8]) -> usize {
     let escape_v = _mm_set1_epi8(b'\\' as i8);
 
     while i + 16 <= len {
-        let chunk = _mm_loadu_si128(slice.as_ptr().add(i) as *const _);
+        let chunk = _mm_loadu_si128(slice.as_ptr().add(i) as *const __m128i);
 
         let eq_quote = _mm_cmpeq_epi8(chunk, quote_v);
         let eq_escape = _mm_cmpeq_epi8(chunk, escape_v);

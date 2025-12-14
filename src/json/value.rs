@@ -39,19 +39,19 @@ pub enum Value {
 impl Default for Value {
     /// The default value is null.
     fn default() -> Self {
-        Value::Null
+        Self::Null
     }
 }
 
 impl Debug for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Value::Null => formatter.write_str("Null"),
-            Value::Bool(boolean) => write!(formatter, "Bool({})", boolean),
-            Value::Number(number) => write!(formatter, "Number({})", number),
-            Value::String(string) => write!(formatter, "String({:?})", string),
-            Value::Array(array) => Debug::fmt(array, formatter),
-            Value::Object(object) => Debug::fmt(object, formatter),
+            Self::Null => formatter.write_str("Null"),
+            Self::Bool(boolean) => write!(formatter, "Bool({})", boolean),
+            Self::Number(number) => write!(formatter, "Number({})", number),
+            Self::String(string) => write!(formatter, "String({:?})", string),
+            Self::Array(array) => Debug::fmt(array, formatter),
+            Self::Object(object) => Debug::fmt(object, formatter),
         }
     }
 }
@@ -59,12 +59,12 @@ impl Debug for Value {
 impl Serialize for Value {
     fn begin(&self) -> Fragment {
         match self {
-            Value::Null => Fragment::Null,
-            Value::Bool(b) => Fragment::Bool(*b),
-            Value::Number(number) => Serialize::begin(number),
-            Value::String(s) => Fragment::Str(Cow::Borrowed(s)),
-            Value::Array(array) => Serialize::begin(array),
-            Value::Object(object) => Serialize::begin(object),
+            Self::Null => Fragment::Null,
+            Self::Bool(b) => Fragment::Bool(*b),
+            Self::Number(number) => Serialize::begin(number),
+            Self::String(s) => Fragment::Str(Cow::Borrowed(s)),
+            Self::Array(array) => Serialize::begin(array),
+            Self::Object(object) => Serialize::begin(object),
         }
     }
 }

@@ -16,7 +16,7 @@ where
 
 impl<T> NonuniqueBox<T> {
     pub fn new(value: T) -> Self {
-        NonuniqueBox::from(Box::new(value))
+        Self::from(Box::new(value))
     }
 }
 
@@ -27,7 +27,7 @@ where
     fn from(boxed: Box<T>) -> Self {
         let ptr = Box::into_raw(boxed);
         let ptr = unsafe { NonNull::new_unchecked(ptr) };
-        NonuniqueBox { ptr }
+        Self { ptr }
     }
 }
 

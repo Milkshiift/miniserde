@@ -101,10 +101,7 @@ where
     T: Serialize,
 {
     fn begin(&self) -> Fragment {
-        match self {
-            Some(some) => some.begin(),
-            None => Fragment::Null,
-        }
+        self.as_ref().map_or_else(|| Fragment::Null, |some| some.begin())
     }
 }
 

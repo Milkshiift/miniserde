@@ -42,3 +42,7 @@ rustdoc-args = [
 [features]
 default = ["std"]
 std = []
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }

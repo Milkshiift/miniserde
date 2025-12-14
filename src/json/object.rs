@@ -32,8 +32,8 @@ fn take(object: Object) -> BTreeMap<String, Value> {
 }
 
 impl Object {
-    pub fn new() -> Self {
-        Object {
+    pub const fn new() -> Self {
+        Self {
             inner: BTreeMap::new(),
         }
     }
@@ -85,7 +85,7 @@ impl FromIterator<(String, Value)> for Object {
     where
         I: IntoIterator<Item = (String, Value)>,
     {
-        Object {
+        Self {
             inner: BTreeMap::from_iter(iter),
         }
     }
