@@ -22,7 +22,9 @@ struct Example {
 
 #[derive(PartialEq, Debug, Serialize, Deserialize)]
 struct Nested {
+    #[serde(skip_serializing_if = "Option::is_none")]
     y: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     z: Option<String>,
 }
 
@@ -58,6 +60,6 @@ fn test_ser() {
     };
     let actual = json::to_string(&example);
     let expected =
-        r#"{"x":"X","t1":"A","t2":"renamedB","t3":["enum"],"struct":{"y":["Y","Y"],"z":null}}"#;
+        r#"{"x":"X","t1":"A","t2":"renamedB","t3":["enum"],"struct":{"y":["Y","Y"]}}"#;
     assert_eq!(actual, expected);
 }

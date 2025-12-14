@@ -18,9 +18,9 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 fn try_expand(input: &DeriveInput) -> Result<TokenStream> {
     match &input.data {
         Data::Struct(DataStruct {
-            fields: Fields::Named(fields),
-            ..
-        }) => derive_struct(input, fields),
+                         fields: Fields::Named(fields),
+                         ..
+                     }) => derive_struct(input, fields),
         Data::Enum(enumeration) => derive_enum(input, enumeration),
         Data::Struct(_) => Err(Error::new(
             Span::call_site(),
@@ -43,6 +43,25 @@ fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenStrea
         .iter()
         .map(attr::name_of_field)
         .collect::<Result<Vec<_>>>()?;
+
+    let skip_checks = fields
+        .named
+        .iter()
+        .map(|f| {
+            let ident = &f.ident;
+            let attrs = attr::get(f)?;
+            if let Some(path) = attrs.skip_serializing_if {
+                Ok(quote! {
+                    if #path(&self.data.#ident) {
+                        continue;
+                    }
+                })
+            } else {
+                Ok(quote!())
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+
     let index = 0usize..;
 
     let wrapper_generics = bound::with_lifetime_bound(&input.generics, "'__a");
@@ -70,16 +89,21 @@ fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenStrea
 
             impl #wrapper_impl_generics miniserde::ser::Map for __Map #wrapper_ty_generics #bounded_where_clause {
                 fn next(&mut self) -> miniserde::#private::Option<(miniserde::#private::Cow<miniserde::#private::str>, &dyn miniserde::Serialize)> {
-                    let __state = self.state;
-                    self.state = __state + 1;
-                    match __state {
-                        #(
-                            #index => miniserde::#private2::Some((
-                                miniserde::#private2::Cow::Borrowed(#fieldstr),
-                                &self.data.#fieldname,
-                            )),
-                        )*
-                        _ => miniserde::#private::None,
+                    loop {
+                        let __state = self.state;
+                        self.state = __state + 1;
+                        match __state {
+                            #(
+                                #index => {
+                                    #skip_checks
+                                    return miniserde::#private2::Some((
+                                        miniserde::#private2::Cow::Borrowed(#fieldstr),
+                                        &self.data.#fieldname,
+                                    ));
+                                }
+                            )*
+                            _ => return miniserde::#private::None,
+                        }
                     }
                 }
             }
