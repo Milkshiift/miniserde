@@ -8,9 +8,6 @@ use syn::{
 pub fn derive(input: &DeriveInput) -> TokenStream {
     match try_expand(input) {
         Ok(expanded) => expanded,
-        // If there are invalid attributes in the input, expand to a Serialize
-        // impl anyway to minimize spurious secondary errors in other code that
-        // serializes this type.
         Err(error) => fallback::ser(input, error),
     }
 }
@@ -18,9 +15,9 @@ pub fn derive(input: &DeriveInput) -> TokenStream {
 fn try_expand(input: &DeriveInput) -> Result<TokenStream> {
     match &input.data {
         Data::Struct(DataStruct {
-                         fields: Fields::Named(fields),
-                         ..
-                     }) => derive_struct(input, fields),
+            fields: Fields::Named(fields),
+            ..
+        }) => derive_struct(input, fields),
         Data::Enum(enumeration) => derive_enum(input, enumeration),
         Data::Struct(_) => Err(Error::new(
             Span::call_site(),
@@ -36,12 +33,13 @@ fn try_expand(input: &DeriveInput) -> Result<TokenStream> {
 fn derive_struct(input: &DeriveInput, fields: &FieldsNamed) -> Result<TokenStream> {
     let ident = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let container_attrs = attr::get_container(input)?;
 
     let fieldname = &fields.named.iter().map(|f| &f.ident).collect::<Vec<_>>();
     let fieldstr = fields
         .named
         .iter()
-        .map(attr::name_of_field)
+        .map(|f| attr::name_of_field(f, &container_attrs))
         .collect::<Result<Vec<_>>>()?;
 
     let skip_checks = fields
