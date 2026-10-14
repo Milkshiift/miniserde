@@ -92,9 +92,8 @@ where
                 }
             }
             Fragment::Map(mut map) => {
-                let next = unsafe {
-                    extend_lifetime!(map.next() as Option<(Cow<str>, &dyn Serialize)>)
-                };
+                let next =
+                    unsafe { extend_lifetime!(map.next() as Option<(Cow<str>, &dyn Serialize)>) };
                 match next {
                     Some((key, first)) => {
                         stack.push(Layer::Map(map, Object::new(), Some(key.into_owned())));

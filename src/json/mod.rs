@@ -9,8 +9,8 @@ pub use self::ser::to_value;
 pub use self::ser::to_vec;
 
 mod de;
-pub use self::de::from_str;
 pub use self::de::from_slice;
+pub use self::de::from_str;
 pub use self::de::from_value;
 
 mod value;

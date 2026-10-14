@@ -85,19 +85,19 @@ impl<'a, 'b> Drop for Deserializer<'a, 'b> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 enum CharClass {
-    Whitespace,  // ' ', '\n', '\r', '\t'
-    Control,     // Invalid characters \x00-\x1F
-    Digit,       // '0' through '9'
-    Quote,       // '"'
-    LeftBrace,   // '{'
-    RightBrace,  // '}'
-    LeftBracket, // '['
+    Whitespace,   // ' ', '\n', '\r', '\t'
+    Control,      // Invalid characters \x00-\x1F
+    Digit,        // '0' through '9'
+    Quote,        // '"'
+    LeftBrace,    // '{'
+    RightBrace,   // '}'
+    LeftBracket,  // '['
     RightBracket, // ']'
-    Comma,       // ','
-    Colon,       // ':'
-    Minus,       // '-'
-    Ident,       // 't', 'f', 'n'
-    Error,       // Any other byte that is invalid in JSON
+    Comma,        // ','
+    Colon,        // ':'
+    Minus,        // '-'
+    Ident,        // 't', 'f', 'n'
+    Error,        // Any other byte that is invalid in JSON
 }
 
 const CLASSIFY: [CharClass; 256] = {
@@ -158,7 +158,10 @@ fn from_value_impl(value: Value, visitor: &mut dyn Visitor) -> Result<()> {
 
     enum Layer {
         Seq(vec::IntoIter<Value>, NonuniqueBox<dyn Seq + 'static>),
-        Map(btree_map::IntoIter<String, Value>, NonuniqueBox<dyn Map + 'static>),
+        Map(
+            btree_map::IntoIter<String, Value>,
+            NonuniqueBox<dyn Map + 'static>,
+        ),
     }
 
     let mut stack: Vec<State> = Vec::new();
@@ -170,8 +173,9 @@ fn from_value_impl(value: Value, visitor: &mut dyn Visitor) -> Result<()> {
                 Layer::Seq(iter, seq) => match iter.next() {
                     Some(v) => {
                         let element = seq.element()?;
-                        visitor =
-                            unsafe { extend_lifetime!(NonNull::from(element) as NonNull<dyn Visitor>) };
+                        visitor = unsafe {
+                            extend_lifetime!(NonNull::from(element) as NonNull<dyn Visitor>)
+                        };
                         current_value = Some(v);
                     }
                     None => {
@@ -251,11 +255,7 @@ fn from_value_impl(value: Value, visitor: &mut dyn Visitor) -> Result<()> {
     }
 }
 
-fn from_slice_impl(
-    j: &[u8],
-    validate_utf8: bool,
-    visitor: &mut dyn Visitor,
-) -> Result<()> {
+fn from_slice_impl(j: &[u8], validate_utf8: bool, visitor: &mut dyn Visitor) -> Result<()> {
     let visitor = NonNull::from(visitor);
     let mut visitor = unsafe { extend_lifetime!(visitor as NonNull<dyn Visitor>) };
     let mut de = Deserializer {
@@ -400,7 +400,6 @@ macro_rules! overflow {
     };
 }
 
-
 impl<'a, 'b> Deserializer<'a, 'b> {
     fn next(&mut self) -> Option<u8> {
         if self.pos < self.input.len() {
@@ -431,7 +430,6 @@ impl<'a, 'b> Deserializer<'a, 'b> {
     fn bump(&mut self) {
         self.pos += 1;
     }
-
 
     fn parse_str(&mut self) -> Result<&'_ str> {
         // Index of the first byte not yet copied into the scratch space.
@@ -933,7 +931,10 @@ fn find_special_char_scalar(slice: &[u8]) -> usize {
 #[inline]
 #[allow(clippy::cast_ptr_alignment)]
 unsafe fn find_special_char_avx2(slice: &[u8]) -> usize {
-    use std::arch::x86_64::{_mm256_set1_epi8, _mm256_loadu_si256, _mm256_cmpeq_epi8, _mm256_movemask_epi8, _mm256_or_si256, __m256i};
+    use std::arch::x86_64::{
+        __m256i, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8, _mm256_or_si256,
+        _mm256_set1_epi8,
+    };
 
     let mut i = 0;
     let len = slice.len();
@@ -968,7 +969,9 @@ unsafe fn find_special_char_avx2(slice: &[u8]) -> usize {
 #[inline]
 #[allow(clippy::cast_ptr_alignment)]
 unsafe fn find_special_char_sse2(slice: &[u8]) -> usize {
-    use std::arch::x86_64::{_mm_set1_epi8, _mm_loadu_si128, _mm_cmpeq_epi8, _mm_movemask_epi8, _mm_or_si128, __m128i};
+    use std::arch::x86_64::{
+        __m128i, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8, _mm_or_si128, _mm_set1_epi8,
+    };
 
     let mut i = 0;
     let len = slice.len();

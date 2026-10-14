@@ -167,7 +167,6 @@ fn test_ser() {
         }),
     };
     let actual = json::to_string(&example);
-    let expected =
-        r#"{"x":"X","t1":"A","t2":"renamedB","t3":["enum"],"struct":{"y":["Y","Y"]}}"#;
+    let expected = r#"{"x":"X","t1":"A","t2":"renamedB","t3":["enum"],"struct":{"y":["Y","Y"]}}"#;
     assert_eq!(actual, expected);
 }
